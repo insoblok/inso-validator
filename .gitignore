@@ -1,0 +1,7 @@
+bin/
+coverage.out
+coverage.html
+*.log
+.env
+config.local.yaml
+data/

@@ -1,0 +1,32 @@
+validator:
+  datadir: "/data"
+  listen_addr: "0.0.0.0:8547"
+  p2p_port: 30303
+  min_stake: 10000
+
+sequencer:
+  rpc_url: "http://localhost:8545"
+  ws_url: "ws://localhost:8546"
+
+l1:
+  rpc_url: "http://localhost:8551"
+  chain_id: 1
+  staking_contract: "0x0000000000000000000000000000000000000000"
+
+tastescore:
+  enabled: true
+  api_url: "https://api.insoblokai.io"
+  api_key: "${TASTESCORE_API_KEY}"
+
+consensus:
+  block_timeout: 2s
+  attestation_delay: 200ms
+  slashing_enabled: true
+
+logging:
+  level: info
+  format: json
+
+metrics:
+  enabled: true
+  addr: "0.0.0.0:6061"
