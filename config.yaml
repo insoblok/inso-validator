@@ -3,6 +3,8 @@ validator:
   listen_addr: "0.0.0.0:8547"
   p2p_port: 30303
   min_stake: 10000
+  bootnodes:
+    - "localhost:30304"  # other validators in devnet
 
 sequencer:
   rpc_url: "http://localhost:8545"

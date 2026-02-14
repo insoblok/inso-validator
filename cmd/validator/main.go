@@ -2,20 +2,26 @@ package main
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"math/big"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/log"
 
 	"github.com/insoblok/inso-validator/internal/config"
 	"github.com/insoblok/inso-validator/internal/consensus"
+	"github.com/insoblok/inso-validator/internal/metrics"
 	"github.com/insoblok/inso-validator/internal/p2p"
+	"github.com/insoblok/inso-validator/internal/reputation"
 	"github.com/insoblok/inso-validator/internal/rpc"
 	"github.com/insoblok/inso-validator/internal/staking"
 	syncEngine "github.com/insoblok/inso-validator/internal/sync"
@@ -42,20 +48,54 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Validator address (in production, derived from keyfile)
-	validatorAddr := common.HexToAddress("0x90F79bf6EB2c4f870365E785982E1f101E93b906")
+	// Validator private key: from env or default devnet key
+	// INSO_VALIDATOR_KEY should be a hex-encoded secp256k1 private key (with or without 0x prefix)
+	var validatorKey *ecdsa.PrivateKey
+	keyHex := os.Getenv("INSO_VALIDATOR_KEY")
+	if keyHex == "" {
+		// Default Anvil account #2 key for devnet
+		keyHex = "7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6"
+	}
+	keyHex = strings.TrimPrefix(keyHex, "0x")
+	keyBytes, err := hex.DecodeString(keyHex)
+	if err != nil {
+		logger.Error("Invalid validator private key hex", "err", err)
+		os.Exit(1)
+	}
+	validatorKey, err = crypto.ToECDSA(keyBytes)
+	if err != nil {
+		logger.Error("Failed to parse validator private key", "err", err)
+		os.Exit(1)
+	}
+	validatorAddr := crypto.PubkeyToAddress(validatorKey.PublicKey)
+	logger.Info("Validator identity loaded", "address", validatorAddr.Hex())
 
 	// Initialize P2P network
 	network := p2p.NewNetwork(&cfg.Validator)
 
-	// Initialize sync engine
-	syncEng := syncEngine.NewEngine(&cfg.Sequencer)
+	// Initialize sync engine (now takes P2P network for gossip-based sync)
+	syncEng := syncEngine.NewEngine(&cfg.Sequencer, network)
 
 	// Initialize verification engine
 	verifyEng := verification.NewEngine()
 
-	// Initialize consensus engine
-	consensusEng := consensus.NewEngine(&cfg.Consensus, network, validatorAddr)
+	// Phase 4: Initialize reputation (XP) manager
+	repCfg := &reputation.XPConfig{
+		MaxXP:              100_000,
+		BlockAttestationXP: cfg.Sovereignty.AttestationXP,
+		UptimeBonusXP:      cfg.Sovereignty.UptimeBonusXP,
+		SlashPenaltyXP:     cfg.Sovereignty.SlashPenaltyXP,
+		DecayRatePerDay:    cfg.Sovereignty.XPDecayRate,
+	}
+	repMgr := reputation.NewManager(repCfg)
+	repMgr.Register(validatorAddr)
+	logger.Info("Reputation manager initialized",
+		"sovereigntyEnabled", cfg.Sovereignty.Enabled,
+		"attestationXP", cfg.Sovereignty.AttestationXP,
+	)
+
+	// Initialize consensus engine (now takes reputation manager + ECDSA key)
+	consensusEng := consensus.NewEngine(&cfg.Consensus, network, validatorAddr, repMgr, validatorKey)
 
 	// Initialize staking manager
 	stakingMgr := staking.NewManager(cfg.Validator.MinStake)
@@ -113,6 +153,11 @@ func main() {
 		logger.Error("Failed to start RPC server", "err", err)
 		os.Exit(1)
 	}
+
+	// Start Prometheus metrics endpoint
+	met := metrics.New()
+	met.Serve(":6061")
+	logger.Info("Metrics server started", "addr", ":6061")
 
 	fmt.Println()
 	logger.Info("═══════════════════════════════════════════════")

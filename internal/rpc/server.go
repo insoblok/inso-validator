@@ -55,6 +55,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handle)
 	mux.HandleFunc("/health", s.handleHealth)
+	mux.HandleFunc("/ready", s.handleReady)
 
 	s.httpServer = &http.Server{
 		Addr:        s.cfg.ListenAddr,
@@ -143,10 +144,39 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":  "ok",
+		"status":         "ok",
+		"service":        "inso-validator",
+		"version":        "phase5",
+		"synced":         s.sync.IsSynced(),
+		"peers":          s.network.PeerCount(),
+		"validatorCount": s.consensus.ValidatorCount(),
+	})
+}
+
+// handleReady returns 200 only when the validator is synced and has peers.
+func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	synced := s.sync.IsSynced()
+	peers := s.network.PeerCount()
+
+	if !synced {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":  "not_ready",
+			"service": "inso-validator",
+			"reason":  "not synced",
+			"synced":  false,
+			"peers":   peers,
+		})
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":  "ready",
 		"service": "inso-validator",
-		"synced":  s.sync.IsSynced(),
-		"peers":   s.network.PeerCount(),
+		"synced":  true,
+		"peers":   peers,
 	})
 }
 

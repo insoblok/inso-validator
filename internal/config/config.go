@@ -10,22 +10,24 @@ import (
 
 // Config is the top-level validator configuration.
 type Config struct {
-	Validator  ValidatorConfig  `yaml:"validator"`
-	Sequencer  SequencerConfig  `yaml:"sequencer"`
-	L1         L1Config         `yaml:"l1"`
-	TasteScore TasteScoreConfig `yaml:"tastescore"`
-	Consensus  ConsensusConfig  `yaml:"consensus"`
-	Logging    LoggingConfig    `yaml:"logging"`
-	Metrics    MetricsConfig    `yaml:"metrics"`
+	Validator   ValidatorConfig   `yaml:"validator"`
+	Sequencer   SequencerConfig   `yaml:"sequencer"`
+	L1          L1Config          `yaml:"l1"`
+	TasteScore  TasteScoreConfig  `yaml:"tastescore"`
+	Consensus   ConsensusConfig   `yaml:"consensus"`
+	Sovereignty SovereigntyConfig `yaml:"sovereignty"`
+	Logging     LoggingConfig     `yaml:"logging"`
+	Metrics     MetricsConfig     `yaml:"metrics"`
 }
 
 // ValidatorConfig holds the core validator settings.
 type ValidatorConfig struct {
-	DataDir    string `yaml:"datadir"`
-	ListenAddr string `yaml:"listen_addr"`
-	P2PPort    int    `yaml:"p2p_port"`
-	MinStake   uint64 `yaml:"min_stake"`
-	KeyFile    string `yaml:"keyfile"`
+	DataDir    string   `yaml:"datadir"`
+	ListenAddr string   `yaml:"listen_addr"`
+	P2PPort    int      `yaml:"p2p_port"`
+	MinStake   uint64   `yaml:"min_stake"`
+	KeyFile    string   `yaml:"keyfile"`
+	Bootnodes  []string `yaml:"bootnodes"`
 }
 
 // SequencerConfig holds the sequencer connection settings.
@@ -66,6 +68,15 @@ type LoggingConfig struct {
 type MetricsConfig struct {
 	Enabled bool   `yaml:"enabled"`
 	Addr    string `yaml:"addr"`
+}
+
+// SovereigntyConfig holds sovereignty engine settings for the validator.
+type SovereigntyConfig struct {
+	Enabled         bool    `yaml:"enabled"`
+	XPDecayRate     float64 `yaml:"xp_decay_rate"`     // daily XP decay (0.005 = 0.5%)
+	AttestationXP   uint64  `yaml:"attestation_xp"`    // XP per block attestation
+	UptimeBonusXP   uint64  `yaml:"uptime_bonus_xp"`   // XP per uptime check
+	SlashPenaltyXP  uint64  `yaml:"slash_penalty_xp"`  // XP lost per slash
 }
 
 // Load reads and parses a YAML configuration file.
@@ -111,6 +122,13 @@ func DefaultConfig() *Config {
 			AttestationDelay: 200 * time.Millisecond,
 			SlashingEnabled:  true,
 			MinValidators:    1,
+		},
+		Sovereignty: SovereigntyConfig{
+			Enabled:        true,
+			XPDecayRate:    0.005,
+			AttestationXP:  10,
+			UptimeBonusXP:  5,
+			SlashPenaltyXP: 500,
 		},
 		Logging: LoggingConfig{
 			Level:  "info",

@@ -2,16 +2,24 @@ package consensus
 
 import (
 	"context"
-	"crypto/sha256"
+	"crypto/ecdsa"
+	"errors"
 	"math/big"
 	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/log"
 
 	"github.com/insoblok/inso-validator/internal/config"
 	"github.com/insoblok/inso-validator/internal/p2p"
+	"github.com/insoblok/inso-validator/internal/reputation"
+)
+
+var (
+	ErrInvalidSignature = errors.New("invalid attestation signature")
+	ErrUnknownValidator = errors.New("unknown validator address")
 )
 
 // Attestation is a validator's signed approval of a block.
@@ -26,22 +34,28 @@ type Attestation struct {
 
 // ValidatorInfo tracks a registered validator's state.
 type ValidatorInfo struct {
-	Address    common.Address `json:"address"`
-	Stake      *big.Int       `json:"stake"`
-	TasteScore float64        `json:"tasteScore"`
-	VotePower  float64        `json:"votePower"` // stake * tasteScore weight
-	IsActive   bool           `json:"isActive"`
-	SlashCount int            `json:"slashCount"`
-	JoinedAt   time.Time      `json:"joinedAt"`
+	Address          common.Address `json:"address"`
+	Stake            *big.Int       `json:"stake"`
+	TasteScore       float64        `json:"tasteScore"`
+	VotePower        float64        `json:"votePower"`        // sovereignty-weighted voting power
+	SovereigntyScore float64        `json:"sovereigntyScore"` // Phase 4: computed sovereignty
+	SovereigntyTier  uint8          `json:"sovereigntyTier"`  // Phase 4: tier
+	IsActive         bool           `json:"isActive"`
+	SlashCount       int            `json:"slashCount"`
+	JoinedAt         time.Time      `json:"joinedAt"`
 }
 
-// Engine implements TasteScore-weighted Proof-of-Stake consensus.
-// Voting power = stake * (1 + tasteScoreBonus).
+// Engine implements sovereignty-weighted Proof-of-Stake consensus.
+// Phase 4: VotingPower = stake * (1 + sovereigntyBonus)
+// where sovereigntyBonus = sovereigntyScore * 0.5
+// Phase 5: Real ECDSA secp256k1 attestation signatures.
 type Engine struct {
 	mu sync.RWMutex
 
 	cfg           *config.ConsensusConfig
 	network       *p2p.Network
+	repMgr        *reputation.Manager
+	privateKey    *ecdsa.PrivateKey
 	validators    map[common.Address]*ValidatorInfo
 	attestations  map[uint64][]*Attestation // blockNum -> attestations
 	localAddr     common.Address
@@ -49,11 +63,13 @@ type Engine struct {
 	cancel        context.CancelFunc
 }
 
-// NewEngine creates a new consensus engine.
-func NewEngine(cfg *config.ConsensusConfig, network *p2p.Network, localAddr common.Address) *Engine {
+// NewEngine creates a new consensus engine with an ECDSA private key for signing.
+func NewEngine(cfg *config.ConsensusConfig, network *p2p.Network, localAddr common.Address, repMgr *reputation.Manager, privKey *ecdsa.PrivateKey) *Engine {
 	return &Engine{
 		cfg:          cfg,
 		network:      network,
+		repMgr:       repMgr,
+		privateKey:   privKey,
 		validators:   make(map[common.Address]*ValidatorInfo),
 		attestations: make(map[uint64][]*Attestation),
 		localAddr:    localAddr,
@@ -86,27 +102,41 @@ func (e *Engine) RegisterValidator(addr common.Address, stake *big.Int, tasteSco
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	// VotePower = stake_in_ether * (1 + 0.5 * tasteScore)
+	// VotePower = stake_in_ether * (1 + 0.5 * sovereigntyScore)
+	// Phase 4: sovereignty score factors in XP, uptime, DID age, TasteScore
 	stakeFloat := new(big.Float).Quo(
 		new(big.Float).SetInt(stake),
 		new(big.Float).SetFloat64(1e18),
 	)
 	stakeF64, _ := stakeFloat.Float64()
-	votePower := stakeF64 * (1 + 0.5*tasteScore)
+
+	// Get sovereignty score from reputation manager
+	var sovereigntyScore float64
+	var tier uint8
+	if e.repMgr != nil {
+		sovereigntyScore, tier = e.repMgr.ComputeSovereignty(addr, stakeF64, tasteScore)
+	}
+
+	// Phase 4: sovereignty-weighted voting power
+	votePower := stakeF64 * (1 + 0.5*sovereigntyScore)
 
 	e.validators[addr] = &ValidatorInfo{
-		Address:    addr,
-		Stake:      stake,
-		TasteScore: tasteScore,
-		VotePower:  votePower,
-		IsActive:   true,
-		JoinedAt:   time.Now(),
+		Address:          addr,
+		Stake:            stake,
+		TasteScore:       tasteScore,
+		VotePower:        votePower,
+		SovereigntyScore: sovereigntyScore,
+		SovereigntyTier:  tier,
+		IsActive:         true,
+		JoinedAt:         time.Now(),
 	}
 
 	e.logger.Info("Validator registered",
 		"addr", addr.Hex(),
 		"stake", stakeF64,
 		"tasteScore", tasteScore,
+		"sovereigntyScore", sovereigntyScore,
+		"tier", tier,
 		"votePower", votePower,
 	)
 }
@@ -129,6 +159,11 @@ func (e *Engine) AttestBlock(blockNum uint64, blockHash common.Hash) (*Attestati
 
 	// Record locally
 	e.attestations[blockNum] = append(e.attestations[blockNum], att)
+
+	// Phase 4: record attestation in reputation system for XP
+	if e.repMgr != nil {
+		e.repMgr.RecordAttestation(e.localAddr)
+	}
 
 	// Broadcast to peers
 	e.network.Broadcast(p2p.MsgAttestation, att.Signature)
@@ -200,13 +235,56 @@ func (e *Engine) Validators() []*ValidatorInfo {
 	return list
 }
 
-// signAttestation generates a signature placeholder.
+// attestationHash computes the Keccak-256 digest over the attestation fields.
+// The hash is: keccak256(abi.encodePacked(blockNumber, blockHash, validator)).
+func attestationHash(att *Attestation) common.Hash {
+	data := make([]byte, 0, 8+32+20)
+	data = append(data, new(big.Int).SetUint64(att.BlockNumber).Bytes()...)
+	data = append(data, att.BlockHash.Bytes()...)
+	data = append(data, att.Validator.Bytes()...)
+	return crypto.Keccak256Hash(data)
+}
+
+// signAttestation signs the attestation with the validator's secp256k1 private key.
 func (e *Engine) signAttestation(att *Attestation) []byte {
-	h := sha256.New()
-	h.Write(new(big.Int).SetUint64(att.BlockNumber).Bytes())
-	h.Write(att.BlockHash.Bytes())
-	h.Write(att.Validator.Bytes())
-	return h.Sum(nil)
+	hash := attestationHash(att)
+	sig, err := crypto.Sign(hash.Bytes(), e.privateKey)
+	if err != nil {
+		e.logger.Error("Failed to sign attestation", "err", err)
+		return nil
+	}
+	return sig // 65 bytes: R (32) + S (32) + V (1)
+}
+
+// VerifyAttestation validates an attestation's ECDSA signature and checks
+// that the recovered address matches the claimed validator and is registered.
+func (e *Engine) VerifyAttestation(att *Attestation) error {
+	if len(att.Signature) != 65 {
+		return ErrInvalidSignature
+	}
+
+	hash := attestationHash(att)
+
+	// Recover the public key from the signature
+	pubKey, err := crypto.SigToPub(hash.Bytes(), att.Signature)
+	if err != nil {
+		return ErrInvalidSignature
+	}
+
+	// Derive the address and compare
+	recovered := crypto.PubkeyToAddress(*pubKey)
+	if recovered != att.Validator {
+		return ErrInvalidSignature
+	}
+
+	// Ensure the validator is registered
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if _, ok := e.validators[att.Validator]; !ok {
+		return ErrUnknownValidator
+	}
+
+	return nil
 }
 
 func (e *Engine) processMessages(ctx context.Context) {

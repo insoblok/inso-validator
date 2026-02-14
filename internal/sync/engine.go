@@ -12,6 +12,7 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 
 	"github.com/insoblok/inso-validator/internal/config"
+	"github.com/insoblok/inso-validator/internal/p2p"
 )
 
 // L2Block is a simplified block structure received from the sequencer.
@@ -22,13 +23,16 @@ type L2Block struct {
 	Timestamp  uint64 `json:"timestamp"`
 	StateRoot  string `json:"stateRoot"`
 	GasUsed    uint64 `json:"gasUsed"`
+	GasLimit   uint64 `json:"gasLimit"`
 	TxCount    int    `json:"txCount"`
+	Sequencer  string `json:"sequencer"`
 }
 
-// Engine syncs L2 blocks from the sequencer RPC.
+// Engine syncs L2 blocks from the sequencer via P2P (primary) + RPC (fallback).
 type Engine struct {
 	mu            sync.RWMutex
 	cfg           *config.SequencerConfig
+	network       *p2p.Network
 	httpClient    *http.Client
 	latestBlock   uint64
 	blocks        map[uint64]*L2Block
@@ -38,13 +42,14 @@ type Engine struct {
 }
 
 // NewEngine creates a new sync engine.
-func NewEngine(cfg *config.SequencerConfig) *Engine {
+func NewEngine(cfg *config.SequencerConfig, network *p2p.Network) *Engine {
 	return &Engine{
-		cfg: cfg,
+		cfg:     cfg,
+		network: network,
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
-		blocks: make(map[uint64]*L2Block, 1024),
+		blocks: make(map[uint64]*L2Block, 4096),
 		logger: log.New("module", "sync"),
 	}
 }
@@ -54,15 +59,20 @@ func (e *Engine) OnNewBlock(fn func(*L2Block)) {
 	e.onNewBlock = fn
 }
 
-// Start begins polling the sequencer for new blocks.
+// Start begins the sync engine: P2P subscription + RPC polling fallback.
 func (e *Engine) Start(ctx context.Context) {
 	ctx, e.cancel = context.WithCancel(ctx)
 
 	e.logger.Info("Sync engine started",
 		"sequencerRPC", e.cfg.RPCURL,
+		"mode", "p2p+rpc",
 	)
 
-	go e.syncLoop(ctx)
+	// P2P block listener (primary path)
+	go e.p2pBlockListener(ctx)
+
+	// RPC polling fallback (catch-up and gap-fill)
+	go e.rpcSyncLoop(ctx)
 }
 
 // Stop halts the sync engine.
@@ -95,25 +105,74 @@ func (e *Engine) IsSynced() bool {
 	return e.LatestBlock() >= latest
 }
 
-func (e *Engine) syncLoop(ctx context.Context) {
+// ── P2P block listener ───────────────────────────────────────────────────────
+
+// p2pBlockListener receives new blocks from the P2P gossip network.
+func (e *Engine) p2pBlockListener(ctx context.Context) {
+	if e.network == nil {
+		e.logger.Debug("No P2P network configured, skipping P2P sync")
+		return
+	}
+
+	msgCh := e.network.Messages()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case msg, ok := <-msgCh:
+			if !ok {
+				return
+			}
+			if msg.Type == p2p.MsgNewBlock {
+				e.handleP2PBlock(msg)
+			}
+		}
+	}
+}
+
+func (e *Engine) handleP2PBlock(msg *p2p.Message) {
+	announce, err := p2p.DecodeBlockAnnounce(msg.Payload)
+	if err != nil {
+		e.logger.Debug("Invalid block announce from P2P", "err", err, "from", msg.From)
+		return
+	}
+
+	block := &L2Block{
+		Number:     announce.Number,
+		Hash:       announce.Hash,
+		ParentHash: announce.ParentHash,
+		Timestamp:  announce.Timestamp,
+		StateRoot:  announce.StateRoot,
+		GasUsed:    announce.GasUsed,
+		GasLimit:   announce.GasLimit,
+		TxCount:    announce.TxCount,
+		Sequencer:  announce.Sequencer,
+	}
+
+	e.processBlock(block, "p2p")
+}
+
+// ── RPC polling fallback ─────────────────────────────────────────────────────
+
+func (e *Engine) rpcSyncLoop(ctx context.Context) {
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
-			e.logger.Info("Sync engine stopped")
+			e.logger.Info("RPC sync loop stopped")
 			return
 		case <-ticker.C:
-			e.syncNew(ctx)
+			e.syncFromRPC(ctx)
 		}
 	}
 }
 
-func (e *Engine) syncNew(ctx context.Context) {
+func (e *Engine) syncFromRPC(ctx context.Context) {
 	remoteLatest, err := e.fetchLatestBlockNumber()
 	if err != nil {
-		e.logger.Debug("Failed to fetch latest block", "err", err)
+		e.logger.Debug("Failed to fetch latest block from RPC", "err", err)
 		return
 	}
 
@@ -122,26 +181,56 @@ func (e *Engine) syncNew(ctx context.Context) {
 		return
 	}
 
-	// Sync blocks sequentially (could be parallelized for catch-up)
+	// Catch up sequentially (could be parallelized for large gaps)
 	for num := localLatest + 1; num <= remoteLatest; num++ {
 		block, err := e.fetchBlock(ctx, num)
 		if err != nil {
-			e.logger.Warn("Failed to fetch block", "number", num, "err", err)
+			e.logger.Warn("Failed to fetch block from RPC", "number", num, "err", err)
 			return
 		}
-
-		e.mu.Lock()
-		e.blocks[num] = block
-		e.latestBlock = num
-		e.mu.Unlock()
-
-		if e.onNewBlock != nil {
-			e.onNewBlock(block)
-		}
-
-		e.logger.Debug("Block synced", "number", num, "txCount", block.TxCount)
+		e.processBlock(block, "rpc")
 	}
 }
+
+// ── Common processing ────────────────────────────────────────────────────────
+
+func (e *Engine) processBlock(block *L2Block, source string) {
+	e.mu.Lock()
+
+	// Skip if already synced
+	if _, exists := e.blocks[block.Number]; exists {
+		e.mu.Unlock()
+		return
+	}
+
+	// Basic validation: block number must be next in sequence (or first block)
+	if block.Number > 1 && block.Number != e.latestBlock+1 {
+		// Gap detected — let RPC fill it in later
+		e.mu.Unlock()
+		e.logger.Debug("Block gap detected, deferring",
+			"expected", e.latestBlock+1,
+			"got", block.Number,
+			"source", source,
+		)
+		return
+	}
+
+	e.blocks[block.Number] = block
+	e.latestBlock = block.Number
+	e.mu.Unlock()
+
+	e.logger.Debug("Block synced",
+		"number", block.Number,
+		"txCount", block.TxCount,
+		"source", source,
+	)
+
+	if e.onNewBlock != nil {
+		e.onNewBlock(block)
+	}
+}
+
+// ── RPC helpers ──────────────────────────────────────────────────────────────
 
 func (e *Engine) fetchLatestBlockNumber() (uint64, error) {
 	result, err := e.rpcCall("eth_blockNumber", nil)
@@ -192,7 +281,6 @@ func (e *Engine) rpcCall(method string, params interface{}) (json.RawMessage, er
 	}
 
 	resp, err := e.httpClient.Post(e.cfg.RPCURL, "application/json", io.NopCloser(
-		// Use bytes.NewReader instead
 		jsonReader(body),
 	))
 	if err != nil {
