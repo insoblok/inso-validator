@@ -152,6 +152,8 @@ func main() {
 
 	// Initialize RPC server
 	rpcServer := rpc.NewServer(&cfg.Validator, consensusEng, syncEng, verifyEng, stakingMgr, network)
+	rpcServer.SetReputation(repMgr)
+	rpcServer.SetSequencerConfig(&cfg.Sequencer)
 
 	// Start all services
 	ctx, cancel := context.WithCancel(context.Background())
