@@ -20,4 +20,4 @@ VOLUME ["/data"]
 EXPOSE 30303 8547
 
 ENTRYPOINT ["inso-validator"]
-CMD ["--config", "/etc/inso/config.yaml", "--datadir", "/data"]
+CMD ["--config", "/etc/inso/config.yaml"]
