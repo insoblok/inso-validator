@@ -13,6 +13,7 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 
 	"github.com/insoblok/inso-validator/internal/config"
+	"github.com/insoblok/inso-validator/internal/metrics"
 	"github.com/insoblok/inso-validator/internal/p2p"
 	"github.com/insoblok/inso-validator/internal/reputation"
 )
@@ -61,6 +62,7 @@ type Engine struct {
 	localAddr     common.Address
 	logger        log.Logger
 	cancel        context.CancelFunc
+	metrics       *metrics.Metrics
 }
 
 // NewEngine creates a new consensus engine with an ECDSA private key for signing.
@@ -75,6 +77,11 @@ func NewEngine(cfg *config.ConsensusConfig, network *p2p.Network, localAddr comm
 		localAddr:    localAddr,
 		logger:       log.New("module", "consensus"),
 	}
+}
+
+// SetMetrics wires the metrics collector into the consensus engine.
+func (e *Engine) SetMetrics(m *metrics.Metrics) {
+	e.metrics = m
 }
 
 // Start begins the consensus engine.
@@ -168,6 +175,11 @@ func (e *Engine) AttestBlock(blockNum uint64, blockHash common.Hash) (*Attestati
 	// Broadcast to peers
 	e.network.Broadcast(p2p.MsgAttestation, att.Signature)
 
+	// Update metrics
+	if e.metrics != nil {
+		e.metrics.AttestationsCreated.Add(1)
+	}
+
 	e.logger.Debug("Block attested",
 		"blockNumber", blockNum,
 		"blockHash", blockHash.Hex()[:10],
@@ -206,7 +218,11 @@ func (e *Engine) IsFinalized(blockNum uint64) bool {
 		return false
 	}
 
-	return attestedPower/totalPower > 2.0/3.0
+	finalized := attestedPower/totalPower > 2.0/3.0
+	if finalized && e.metrics != nil {
+		e.metrics.BlocksFinalized.Add(1)
+	}
+	return finalized
 }
 
 // ValidatorCount returns the number of active validators.

@@ -114,17 +114,40 @@ func main() {
 	consensusEng.RegisterValidator(validatorAddr, initialStake, 0.8) // initial tasteScore
 
 	// Wire up: verify + attest each new block from sync
+	adaptiveBounds := verification.AdaptiveBlockBounds{
+		MinGasLimit: cfg.AdaptiveBlock.MinGasLimit,
+		MaxGasLimit: cfg.AdaptiveBlock.MaxGasLimit,
+		MinMaxTx:    cfg.AdaptiveBlock.MinMaxTx,
+		MaxMaxTx:    cfg.AdaptiveBlock.MaxMaxTx,
+	}
+	if !cfg.AdaptiveBlock.Enabled {
+		adaptiveBounds = verification.DefaultAdaptiveBounds()
+	}
+
 	syncEng.OnNewBlock(func(block *syncEngine.L2Block) {
+		// Verify state root
 		result := verifyEng.VerifyBlock(block)
-		if result.Valid {
-			blockHash := common.HexToHash(block.Hash)
-			consensusEng.AttestBlock(block.Number, blockHash)
-		} else {
+		if !result.Valid {
 			logger.Warn("Block verification failed",
 				"number", block.Number,
 				"error", result.Error,
 			)
+			return
 		}
+
+		// Verify adaptive block bounds
+		adaptiveResult := verifyEng.VerifyAdaptiveBlock(block, adaptiveBounds)
+		if !adaptiveResult.Valid {
+			logger.Warn("Adaptive block check failed",
+				"number", block.Number,
+				"error", adaptiveResult.Error,
+			)
+			// Log but don't reject — adaptive bounds may be lenient on devnet
+		}
+
+		// Attest the block
+		blockHash := common.HexToHash(block.Hash)
+		consensusEng.AttestBlock(block.Number, blockHash)
 	})
 
 	// Initialize RPC server
@@ -158,6 +181,16 @@ func main() {
 	met := metrics.New()
 	met.Serve(":6061")
 	logger.Info("Metrics server started", "addr", ":6061")
+
+	// Wire metrics into all components
+	syncEng.SetMetrics(met)
+	verifyEng.SetMetrics(met)
+	consensusEng.SetMetrics(met)
+	rpcServer.SetMetrics(met)
+
+	// Seed initial metrics values
+	met.PeerCount.Store(int32(network.PeerCount()))
+	met.StakedAmountWei.Store(int64(cfg.Validator.MinStake))
 
 	fmt.Println()
 	logger.Info("═══════════════════════════════════════════════")

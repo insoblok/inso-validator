@@ -8,6 +8,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/log"
 
+	"github.com/insoblok/inso-validator/internal/metrics"
 	syncPkg "github.com/insoblok/inso-validator/internal/sync"
 )
 
@@ -23,6 +24,7 @@ type Result struct {
 type Engine struct {
 	stateRoot common.Hash
 	logger    log.Logger
+	metrics   *metrics.Metrics
 }
 
 // NewEngine creates a new verification engine.
@@ -38,6 +40,11 @@ func NewEngine() *Engine {
 		stateRoot: root,
 		logger:    log.New("module", "verification"),
 	}
+}
+
+// SetMetrics wires the metrics collector into the verification engine.
+func (e *Engine) SetMetrics(m *metrics.Metrics) {
+	e.metrics = m
 }
 
 // VerifyBlock independently re-executes a block and checks the state root.

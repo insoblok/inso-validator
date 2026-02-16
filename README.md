@@ -24,12 +24,17 @@ Validator node for the InSoBlok L2 blockchain. Validates blocks produced by the 
 
 ## Features
 
-- **TasteScore-Weighted Consensus** — Validator influence proportional to staked INSO + TasteScore
-- **State Verification** — Re-executes transactions to verify sequencer-produced state roots
-- **Slashing Protection** — Built-in double-signing detection and slashing enforcement
-- **P2P Networking** — libp2p-based gossip for block propagation and validator communication
-- **XP Reputation** — Earns XP for honest validation, loses XP for missed blocks or misbehavior
-- **Delegation Support** — Accepts delegated stake from token holders
+- **Sovereignty-Weighted PoS Consensus** — Voting power = stake × (1 + 0.5 × sovereigntyScore)
+- **State Verification** — Re-executes state root derivation to verify sequencer blocks
+- **Adaptive Block Validation** — Verifies block gas limits/tx counts are within adaptive bounds (15M–60M gas, 1K–10K txs)
+- **Lane Allocation Checks** — Validates that execution lane stats are internally consistent
+- **Compute Receipt Verification** — Independently recomputes SHA-256 receipt hashes to verify integrity
+- **ECDSA Attestation Signing** — secp256k1 attestation signatures with on-chain signature recovery
+- **Slashing Protection** — Double-signing detection and slashing enforcement
+- **P2P Networking** — Gossip-based block propagation + attestation relay
+- **XP Reputation System** — Earns XP for attestations (+10), uptime (+5); loses XP for slashes (-500)
+- **Sovereignty Scoring** — 5-factor composite (stake 30%, TasteScore 25%, XP 20%, uptime 15%, DID age 10%)
+- **Prometheus Metrics** — Full observability with 16 metric counters/gauges on `:6061/metrics`
 
 ## Prerequisites
 
@@ -101,6 +106,20 @@ consensus:
   attestation_delay: 200ms
   slashing_enabled: true
 
+sovereignty:
+  enabled: true
+  xp_decay_rate: 0.005
+  attestation_xp: 10
+  uptime_bonus_xp: 5
+  slash_penalty_xp: 500
+
+adaptive_block:
+  enabled: true
+  min_gas_limit: 15000000
+  max_gas_limit: 60000000
+  min_max_tx: 1000
+  max_max_tx: 10000
+
 logging:
   level: info
   format: json
@@ -127,24 +146,21 @@ inso-validator/
 │   └── validator/          # Main entry point
 │       └── main.go
 ├── internal/
-│   ├── config/             # Configuration loading
-│   ├── consensus/          # TasteScore-weighted PoS consensus
-│   ├── p2p/                # libp2p networking layer
-│   ├── sync/               # Block sync from sequencer & L1
-│   ├── verifier/           # Block & state root verification
+│   ├── config/             # Configuration & YAML loading
+│   ├── consensus/          # Sovereignty-weighted PoS consensus engine
+│   ├── metrics/            # Prometheus metrics (16 counters/gauges)
+│   ├── p2p/                # P2P networking (gossip, block announce, attestations)
+│   ├── reputation/         # XP reputation manager & sovereignty scoring
+│   ├── rpc/                # JSON-RPC server (validator status, validators, peers, stakes)
 │   ├── staking/            # Stake management & delegation
-│   ├── slashing/           # Slashing detection & enforcement
-│   ├── tastescore/         # TasteScore client & caching
-│   └── state/              # Local state management
-├── pkg/
-│   └── types/              # Shared types
-├── scripts/
-├── docker/
-├── docs/
+│   ├── sync/               # Block sync from sequencer (P2P + RPC fallback)
+│   └── verification/       # Block verification engine
+│       ├── engine.go        #   State root re-derivation
+│       └── features.go      #   Lane allocation, compute receipts, adaptive block checks
+├── config.yaml
 ├── Makefile
 ├── Dockerfile
 ├── go.mod
-├── go.sum
 └── README.md
 ```
 

@@ -10,14 +10,15 @@ import (
 
 // Config is the top-level validator configuration.
 type Config struct {
-	Validator   ValidatorConfig   `yaml:"validator"`
-	Sequencer   SequencerConfig   `yaml:"sequencer"`
-	L1          L1Config          `yaml:"l1"`
-	TasteScore  TasteScoreConfig  `yaml:"tastescore"`
-	Consensus   ConsensusConfig   `yaml:"consensus"`
-	Sovereignty SovereigntyConfig `yaml:"sovereignty"`
-	Logging     LoggingConfig     `yaml:"logging"`
-	Metrics     MetricsConfig     `yaml:"metrics"`
+	Validator     ValidatorConfig     `yaml:"validator"`
+	Sequencer     SequencerConfig     `yaml:"sequencer"`
+	L1            L1Config            `yaml:"l1"`
+	TasteScore    TasteScoreConfig    `yaml:"tastescore"`
+	Consensus     ConsensusConfig     `yaml:"consensus"`
+	Sovereignty   SovereigntyConfig   `yaml:"sovereignty"`
+	AdaptiveBlock AdaptiveBlockConfig `yaml:"adaptive_block"`
+	Logging       LoggingConfig       `yaml:"logging"`
+	Metrics       MetricsConfig       `yaml:"metrics"`
 }
 
 // ValidatorConfig holds the core validator settings.
@@ -79,6 +80,15 @@ type SovereigntyConfig struct {
 	SlashPenaltyXP  uint64  `yaml:"slash_penalty_xp"`  // XP lost per slash
 }
 
+// AdaptiveBlockConfig defines the expected adaptive block bounds for validation.
+type AdaptiveBlockConfig struct {
+	Enabled     bool   `yaml:"enabled"`
+	MinGasLimit uint64 `yaml:"min_gas_limit"`
+	MaxGasLimit uint64 `yaml:"max_gas_limit"`
+	MinMaxTx    int    `yaml:"min_max_tx"`
+	MaxMaxTx    int    `yaml:"max_max_tx"`
+}
+
 // Load reads and parses a YAML configuration file.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
@@ -129,6 +139,13 @@ func DefaultConfig() *Config {
 			AttestationXP:  10,
 			UptimeBonusXP:  5,
 			SlashPenaltyXP: 500,
+		},
+		AdaptiveBlock: AdaptiveBlockConfig{
+			Enabled:     true,
+			MinGasLimit: 15_000_000,
+			MaxGasLimit: 60_000_000,
+			MinMaxTx:    1_000,
+			MaxMaxTx:    10_000,
 		},
 		Logging: LoggingConfig{
 			Level:  "info",

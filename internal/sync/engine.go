@@ -12,6 +12,7 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 
 	"github.com/insoblok/inso-validator/internal/config"
+	"github.com/insoblok/inso-validator/internal/metrics"
 	"github.com/insoblok/inso-validator/internal/p2p"
 )
 
@@ -39,6 +40,7 @@ type Engine struct {
 	logger        log.Logger
 	cancel        context.CancelFunc
 	onNewBlock    func(*L2Block) // callback when a new block is received
+	metrics       *metrics.Metrics
 }
 
 // NewEngine creates a new sync engine.
@@ -52,6 +54,11 @@ func NewEngine(cfg *config.SequencerConfig, network *p2p.Network) *Engine {
 		blocks: make(map[uint64]*L2Block, 4096),
 		logger: log.New("module", "sync"),
 	}
+}
+
+// SetMetrics wires the metrics collector into the sync engine.
+func (e *Engine) SetMetrics(m *metrics.Metrics) {
+	e.metrics = m
 }
 
 // OnNewBlock registers a callback for each new block.
@@ -218,6 +225,16 @@ func (e *Engine) processBlock(block *L2Block, source string) {
 	e.blocks[block.Number] = block
 	e.latestBlock = block.Number
 	e.mu.Unlock()
+
+	// Update sync metrics
+	if e.metrics != nil {
+		e.metrics.SyncedBlock.Store(block.Number)
+		if e.IsSynced() {
+			e.metrics.IsSynced.Store(1)
+		} else {
+			e.metrics.IsSynced.Store(0)
+		}
+	}
 
 	e.logger.Debug("Block synced",
 		"number", block.Number,

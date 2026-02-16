@@ -12,6 +12,7 @@ import (
 
 	"github.com/insoblok/inso-validator/internal/config"
 	"github.com/insoblok/inso-validator/internal/consensus"
+	"github.com/insoblok/inso-validator/internal/metrics"
 	"github.com/insoblok/inso-validator/internal/p2p"
 	"github.com/insoblok/inso-validator/internal/staking"
 	syncEngine "github.com/insoblok/inso-validator/internal/sync"
@@ -28,6 +29,7 @@ type Server struct {
 	network      *p2p.Network
 	logger       log.Logger
 	cfg          *config.ValidatorConfig
+	metrics      *metrics.Metrics
 }
 
 // NewServer creates a new validator RPC server.
@@ -48,6 +50,11 @@ func NewServer(
 		logger:       log.New("module", "rpc"),
 		cfg:          cfg,
 	}
+}
+
+// SetMetrics wires the metrics collector into the RPC server.
+func (s *Server) SetMetrics(m *metrics.Metrics) {
+	s.metrics = m
 }
 
 // Start begins the RPC server.
@@ -84,6 +91,10 @@ func (s *Server) Stop(ctx context.Context) error {
 }
 
 func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
+	if s.metrics != nil {
+		s.metrics.RPCRequests.Add(1)
+	}
+
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return

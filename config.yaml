@@ -25,6 +25,20 @@ consensus:
   attestation_delay: 200ms
   slashing_enabled: true
 
+sovereignty:
+  enabled: true
+  xp_decay_rate: 0.005
+  attestation_xp: 10
+  uptime_bonus_xp: 5
+  slash_penalty_xp: 500
+
+adaptive_block:
+  enabled: true
+  min_gas_limit: 15000000
+  max_gas_limit: 60000000
+  min_max_tx: 1000
+  max_max_tx: 10000
+
 logging:
   level: info
   format: json
