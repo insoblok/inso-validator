@@ -43,6 +43,21 @@ type Metrics struct {
 	// RPC
 	RPCRequests          atomic.Uint64
 
+	// ── Phase 5 Metrics ──
+
+	// Block verification (ZK proof checking)
+	BlocksVerified       atomic.Uint64
+	VerificationFailures atomic.Uint64
+
+	// Cross-chain attestation
+	CrossChainL2ToL1     atomic.Uint64
+	CrossChainL1ToL2     atomic.Uint64
+
+	// Governance
+	GovernanceActiveProposals atomic.Int32
+	GovernanceProposalsTotal  atomic.Uint64
+	GovernanceVotesCast       atomic.Uint64
+
 	logger log.Logger
 }
 
@@ -148,4 +163,32 @@ func (m *Metrics) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	fmt.Fprintf(w, "# HELP inso_validator_rpc_requests_total Total RPC requests\n")
 	fmt.Fprintf(w, "# TYPE inso_validator_rpc_requests_total counter\n")
 	fmt.Fprintf(w, "inso_validator_rpc_requests_total %d\n\n", m.RPCRequests.Load())
+
+	// ── Phase 5: Block verification ──
+	fmt.Fprintf(w, "# HELP inso_validator_blocks_verified_total Blocks verified via ZK proof\n")
+	fmt.Fprintf(w, "# TYPE inso_validator_blocks_verified_total counter\n")
+	fmt.Fprintf(w, "inso_validator_blocks_verified_total %d\n\n", m.BlocksVerified.Load())
+
+	fmt.Fprintf(w, "# HELP inso_validator_verification_failures_total Block verification failures\n")
+	fmt.Fprintf(w, "# TYPE inso_validator_verification_failures_total counter\n")
+	fmt.Fprintf(w, "inso_validator_verification_failures_total %d\n\n", m.VerificationFailures.Load())
+
+	// ── Phase 5: Cross-chain attestation ──
+	fmt.Fprintf(w, "# HELP inso_crosschain_attestations_total Cross-chain attestation count\n")
+	fmt.Fprintf(w, "# TYPE inso_crosschain_attestations_total counter\n")
+	fmt.Fprintf(w, "inso_crosschain_attestations_total{direction=\"l2_to_l1\"} %d\n", m.CrossChainL2ToL1.Load())
+	fmt.Fprintf(w, "inso_crosschain_attestations_total{direction=\"l1_to_l2\"} %d\n\n", m.CrossChainL1ToL2.Load())
+
+	// ── Phase 5: Governance ──
+	fmt.Fprintf(w, "# HELP inso_governance_active_proposals Currently active governance proposals\n")
+	fmt.Fprintf(w, "# TYPE inso_governance_active_proposals gauge\n")
+	fmt.Fprintf(w, "inso_governance_active_proposals %d\n\n", m.GovernanceActiveProposals.Load())
+
+	fmt.Fprintf(w, "# HELP inso_governance_proposals_total Total governance proposals created\n")
+	fmt.Fprintf(w, "# TYPE inso_governance_proposals_total counter\n")
+	fmt.Fprintf(w, "inso_governance_proposals_total %d\n\n", m.GovernanceProposalsTotal.Load())
+
+	fmt.Fprintf(w, "# HELP inso_governance_votes_cast_total Total governance votes cast\n")
+	fmt.Fprintf(w, "# TYPE inso_governance_votes_cast_total counter\n")
+	fmt.Fprintf(w, "inso_governance_votes_cast_total %d\n\n", m.GovernanceVotesCast.Load())
 }
